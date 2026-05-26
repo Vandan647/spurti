@@ -9,6 +9,7 @@ const chatSPReviewSchema = new mongoose.Schema({
   issuedByName: { type: String, required: true, index: true },
   issuedByEmail: { type: String, lowercase: true, trim: true, default: '' },
   delta: { type: Number, required: true },
+  isPercent: { type: Boolean, default: false },
   reason: { type: String, required: true },
   evidenceText: { type: String, required: true },
   sourceMessage: { type: String, required: true },

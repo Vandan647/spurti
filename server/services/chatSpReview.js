@@ -39,10 +39,14 @@ function timeOnDate(dateValue, timeValue) {
 }
 
 function extractDelta(text) {
+  // Handle percentage-based SP: +10% SP, -20% SP
+  const pctMatch = String(text || '').match(/([+-]?\s*\d+)\s*%\s*SP\b/i);
+  if (pctMatch) return { value: Number(pctMatch[1].replace(/\s+/g, '')), isPercent: true };
+  // Handle absolute SP: awarded +5 SP, -3 points, +5sp
   const awarded = String(text || '').match(/awarded\s*([+-]?\s*\d+)\s*(?:bonus\s*)?(?:sp|points?)/i);
-  if (awarded) return Number(awarded[1].replace(/\s+/g, ''));
+  if (awarded) return { value: Number(awarded[1].replace(/\s+/g, '')), isPercent: false };
   const direct = String(text || '').match(/(^|[^\w])([+-])\s*(\d+)\s*(?:sp|points?)\b/i);
-  if (direct) return Number(`${direct[2]}${direct[3]}`);
+  if (direct) return { value: Number(`${direct[2]}${direct[3]}`), isPercent: false };
   return null;
 }
 
@@ -96,6 +100,11 @@ function sourceKey(sessionLabel, entry, delta, studentKey = '') {
 }
 
 async function upsertReview(review) {
+  // Normalize delta: extract numeric value if it's an object {value, isPercent}
+  if (review.delta && typeof review.delta === 'object' && 'value' in review.delta) {
+    review.isPercent = review.delta.isPercent || false;
+    review.delta = review.delta.value;
+  }
   const exists = await ChatSPReview.exists({ sourceMessageKey: review.sourceMessageKey });
   if (exists) return false;
   await ChatSPReview.create(review);
@@ -133,7 +142,8 @@ export async function scanChatSPReviews({ sessionLabel, date, chatFile, rootDir 
           reason: `${sessionLabel}: manual chat SP from ${entry.sender}. Listed in chat award message.`,
           evidenceText: compact(entry.text),
           sourceMessage: entry.text,
-          sourceMessageKey: sourceKey(sessionLabel, entry, delta, student?.email || name),
+          sourceMessageKey: sourceKey(sessionLabel, entry, delta.value, student?.email || name),
+          isPercent: delta.isPercent,
           confidence
         };
         if (await upsertReview(review)) createdReviews++;
@@ -166,7 +176,8 @@ export async function scanChatSPReviews({ sessionLabel, date, chatFile, rootDir 
       reason: `${sessionLabel}: manual chat SP from ${entry.sender}. Reply matched "${quote}".`,
       evidenceText: `Reply: ${compact(entry.text)} | Matched student message: ${compact(target.text)}`,
       sourceMessage: entry.text,
-      sourceMessageKey: sourceKey(sessionLabel, entry, delta),
+      sourceMessageKey: sourceKey(sessionLabel, entry, delta.value),
+          isPercent: delta.isPercent,
       confidence
     };
     if (await upsertReview(review)) createdReviews++;

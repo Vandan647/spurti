@@ -328,7 +328,12 @@ api.get('/admin/chat-sp-reviews', adminGuard, async (req, res) => {
   const status = String(req.query.status || 'pending');
   const query = status === 'all' ? {} : { status };
   const reviews = await ChatSPReview.find(query).sort({ dateTime: 1, createdAt: 1 }).limit(500).lean();
-  res.json(reviews);
+  const enriched = reviews.map(r => {
+    const isPct = r.isPercent || false;
+    const displayDelta = isPct ? String(r.delta) + '%' : String(r.delta);
+    return { ...r, displayDelta, isPercent: isPct };
+  });
+  res.json(enriched);
 });
 
 api.post('/admin/chat-sp-reviews/:id/reject', adminGuard, async (req, res) => {
@@ -348,9 +353,16 @@ api.post('/admin/chat-sp-reviews/:id/accept', adminGuard, async (req, res) => {
   if (review.status !== 'pending') return res.status(409).json({ error: `Review is already ${review.status}` });
 
   const email = normalizeEmail(req.body?.studentEmail || review.studentEmail);
-  const delta = Number(req.body?.delta ?? review.delta);
-  const reason = String(req.body?.reason || review.reason || '').trim();
+  const isPercent = review.isPercent || false;
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'A matched student email is required before accepting.' });
+
+  // Calculate delta: if percent-based, compute from current balance
+  let delta = Number(req.body?.delta ?? review.delta);
+  if (isPercent) {
+    const last = await SPTransaction.findOne({ email }).sort({ dateTime: -1, createdAt: -1 }).lean();
+    const currentBalance = Number(last?.balanceAfter ?? 0);
+    delta = Math.round(currentBalance * delta / 100);
+  }
   if (!Number.isFinite(delta) || delta === 0) return res.status(400).json({ error: 'A non-zero SP delta is required.' });
 
   const student = await Student.findOne({ email });
@@ -363,11 +375,11 @@ api.post('/admin/chat-sp-reviews/:id/accept', adminGuard, async (req, res) => {
     studentId: student._id,
     category: 'chat_manual_award',
     sessionLabel: review.sessionLabel,
-    deltaMode: 'absolute',
-    deltaValue: delta,
+    deltaMode: review.isPercent ? 'percentage' : 'absolute',
+    deltaValue: Number(req.body?.delta ?? review.delta),
     appliedDelta: delta,
     balanceAfter: Number(last?.balanceAfter ?? student.totalSp ?? 0) + delta,
-    reason: reason || `Manual chat SP by ${review.issuedByName}.`,
+    reason: String(req.body?.reason || review.reason || '').trim() || `Manual chat SP by ${review.issuedByName}.`,
     dateTime: review.dateTime
   });
 
@@ -377,7 +389,7 @@ api.post('/admin/chat-sp-reviews/:id/accept', adminGuard, async (req, res) => {
   review.studentEmail = email;
   review.studentId = student._id;
   review.delta = delta;
-  review.reason = reason || review.reason;
+  review.reason = String(req.body?.reason || review.reason || '').trim() || review.reason;
   review.transactionId = transaction._id;
   await review.save();
   await recalculateStudentSp(email);

@@ -558,7 +558,7 @@ function ChatSPReviewTable({ reviews, onAction, onRefresh }) {
               <tr key={review._id}>
                 <td>{new Date(review.dateTime).toLocaleString()}</td>
                 <td><strong>{review.studentName || 'Unmatched'}</strong><span>{review.studentEmail || 'No email match'}</span></td>
-                <td className={review.delta > 0 ? 'credit' : 'debit'}>{review.delta > 0 ? `+${review.delta}` : review.delta}</td>
+                <td className={review.delta > 0 ? 'credit' : 'debit'}>{review.displayDelta || (review.delta > 0 ? `+${review.delta}` : review.delta)}</td>
                 <td>{review.issuedByName}</td>
                 <td><p>{review.reason}</p><em>{review.evidenceText}</em></td>
                 <td>{review.confidence}</td>
