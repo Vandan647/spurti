@@ -1,15 +1,15 @@
-# Adding VLED SP Button to Samagama Dashboard
+# Adding "See your Spurti Bonus" Button to Samagama Dashboard
 
 ## Overview
 
-This document describes what needs to be done to add a "View VLED SP →" button in the Samagama student dashboard. When clicked, the button redirects the logged-in student to their Spurti (VLED Summership SP) dashboard without requiring them to log in again.
+This document describes what needs to be done to add a "See your Spurti Bonus →" button in the Samagama student dashboard. When clicked, the button redirects the logged-in student to their Spurti (Summership SP) dashboard without requiring them to log in again.
 
 ---
 
 ## Architecture
 
 ```
-Student clicks "View VLED SP →"
+Student clicks "See your Spurti Bonus →"
         │
         ▼
 Samagama server generates HMAC-signed token
@@ -116,7 +116,7 @@ app.get('/api/spurti/generate-auth-token', requireAuth, (req, res) => {
 
 **File:** `/var/samagama/web-client/src/SpurtiPointsPanel.jsx`
 
-Modify to add a "View VLED SP →" link button after the SP chip:
+Modify to add a "See your Spurti Bonus →" link button after the SP chip:
 
 ```javascript
 // In the return section of SpurtiPointsPanel.jsx
@@ -124,7 +124,7 @@ Modify to add a "View VLED SP →" link button after the SP chip:
 
 <span style={styles.spChip}>SP: {sp ?? 0}</span>
 
-{/* VLED SP Button */}
+{/* Spurti Bonus Button */}
 <a
   href="/api/spurti/generate-auth-token"
   target="_blank"
@@ -151,7 +151,7 @@ Modify to add a "View VLED SP →" link button after the SP chip:
     }
   }}
 >
-  View VLED SP →
+  See your Spurti Bonus →
 </a>
 ```
 
@@ -179,7 +179,7 @@ pm2 restart server
 | File | Change |
 |------|--------|
 | `server/server.js` | Read `SPURTI_AUTH_SECRET` from `/home/sakshi/spurti/.env`; add `/api/spurti/generate-auth-token` route |
-| `web-client/src/SpurtiPointsPanel.jsx` | Add "View VLED SP →" button with fetch-to-new-tab flow |
+| `web-client/src/SpurtiPointsPanel.jsx` | Add "See your Spurti Bonus →" button with fetch-to-new-tab flow |
 | `web-client/` | `npm run build` to regenerate dist |
 
 ---
@@ -196,7 +196,7 @@ pm2 restart server
 ## Testing
 
 1. Log in to samagama as a student
-2. Find the "View VLED SP →" button in the dashboard (near Spurti Points panel)
+2. Find the "See your Spurti Bonus →" button in the dashboard (near Spurti Points panel)
 3. Click it — should open a new tab with the spurti dashboard showing your SP and rank
 4. Verify no email appears in the URL bar
 5. Check spurti's leaderboard matches what you see in the dashboard
