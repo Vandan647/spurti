@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -67,7 +67,16 @@ function App() {
     return <main className="page login-page"><section className="panel auth-card"><p className="eyebrow">Spurti</p><h1>Loading</h1></section></main>;
   }
   if (view === 'student' && profile) {
-    return <StudentView profile={profile} onBack={config.allowStudentSearch ? () => setView('landing') : null} />;
+    return (
+      <>
+        <StudentView profile={profile} onBack={config.allowStudentSearch ? () => setView('landing') : null} />
+        <SurveyModal
+          survey={config.survey}
+          student={profile.student}
+          onDone={() => setProfile(prev => ({ ...prev, student: { ...prev.student, surveyCompleted: true } }))}
+        />
+      </>
+    );
   }
   if (view === 'excused' && excused) {
     return <ExcusedView data={excused} onBack={config.allowStudentSearch ? () => setView('landing') : null} />;
@@ -752,6 +761,88 @@ function AllStudentsPanel({ stats, onStudent, auth }) {
         </table>
       )}
     </section>
+  );
+}
+
+
+function SurveyModal({ survey, student, onDone }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [note, setNote] = useState('');
+  const loadCount = useRef(0);
+  const done = useRef(false);
+
+  const enabled = survey?.enabled && survey.formUrl && student && !student.surveyCompleted;
+
+  // Mark complete, then dismiss. Shared by the iframe-load detector and the button.
+  async function markComplete(auto) {
+    if (done.current) return;
+    setSubmitting(true);
+    setNote('');
+    try {
+      const res = await fetch(`${API}/survey/complete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: student.email })
+      });
+      if (res.ok) { done.current = true; onDone(); return; }
+      if (!auto) setNote('We could not confirm your submission. Make sure you are logged in and pressed Submit in the form.');
+    } catch {
+      if (!auto) setNote('Network error — please try again in a moment.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // Poll for webhook-driven completion (the production auto-detector): Google's
+  // Apps Script tells our server on submit; this notices and closes the modal.
+  useEffect(() => {
+    if (!enabled) return;
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/survey/status`);
+        if (r.ok && (await r.json()).completed && !done.current) { done.current = true; onDone(); }
+      } catch { /* ignore */ }
+    }, 6000);
+    return () => clearInterval(id);
+  }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!enabled) return null;
+
+  const hard = survey.enforcement !== 'soft';
+  const email = student.email || '';
+  const sep = survey.formUrl.includes('?') ? '&' : '?';
+  let src = `${survey.formUrl}${sep}embedded=true`;
+  if (survey.emailEntryId && email) {
+    src += `&usp=pp_url&${encodeURIComponent(survey.emailEntryId)}=${encodeURIComponent(email)}`;
+  }
+
+  // Google navigates the embedded form to its "response recorded" page on submit,
+  // which fires a second iframe load. First load = the form; a later one = submitted.
+  function handleIframeLoad() {
+    loadCount.current += 1;
+    if (loadCount.current >= 2) markComplete(true);
+  }
+
+  return (
+    <div className="survey-overlay" role="dialog" aria-modal="true" aria-labelledby="survey-title">
+      <div className="survey-modal">
+        <div className="survey-head">
+          <h2 id="survey-title">One quick step — your feedback is required</h2>
+          <p>
+            Please complete this short survey to continue to your Spurti dashboard.
+            Just answer the questions and press <strong>Submit</strong> — this window
+            closes on its own once your response is recorded.
+          </p>
+        </div>
+        <iframe title="Spurti feedback survey" src={src} className="survey-frame" onLoad={handleIframeLoad} />
+        <div className="survey-actions">
+          {!hard && <button type="button" className="survey-ghost" onClick={onDone}>Maybe later</button>}
+          <button type="button" className="survey-primary" disabled={submitting} onClick={() => markComplete(false)}>
+            {submitting ? 'Checking…' : "I've submitted — continue"}
+          </button>
+        </div>
+        {note && <p className="survey-note">{note}</p>}
+      </div>
+    </div>
   );
 }
 

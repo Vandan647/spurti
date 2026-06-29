@@ -15,7 +15,12 @@ const studentSchema = new mongoose.Schema({
   level: { type: Number, default: 1 },
   trophyLeague: { type: String, default: 'Bronze II' },
   legendBadgeUnlocked: { type: Boolean, default: false },
-  leaderboardGroup: { type: String, default: '', index: true }
+  leaderboardGroup: { type: String, default: '', index: true },
+  // Survey triangulation (perception follow-up). Set when the student submits
+  // the dashboard pop-up Google Form — via the Apps Script webhook or the
+  // "I've submitted" button. Drives whether the survey modal still shows.
+  surveyCompleted: { type: Boolean, default: false, index: true },
+  surveyCompletedAt: { type: Date, default: null }
 }, { timestamps: true });
 
 studentSchema.index({ name: 'text', email: 'text', alternateEmail: 'text' });

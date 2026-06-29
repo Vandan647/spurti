@@ -20,6 +20,18 @@ const clientDist = path.join(rootDir, 'client', 'dist');
 const ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || 'dled@iitrpr.ac.in');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'vled-local-admin';
 
+// Survey triangulation pop-up. All driven by env so the form link / mode can
+// change without a client rebuild (the client reads these via /api/config).
+const SURVEY = {
+  enabled: process.env.SURVEY_ENABLED === '1',
+  formUrl: process.env.SURVEY_FORM_URL || '',          // .../viewform  (the published form)
+  emailEntryId: process.env.SURVEY_EMAIL_ENTRY || '',  // e.g. entry.1234567890  (pre-fills email)
+  // Mandatory survey: 'hard' = blocking modal the student cannot dismiss until
+  // they submit. No SP reward — participation is required, not incentivised.
+  enforcement: process.env.SURVEY_ENFORCEMENT || 'hard',
+  webhookSecret: process.env.SURVEY_WEBHOOK_SECRET || '' // shared secret for the Apps Script webhook
+};
+
 const app = express();
 const api = express.Router();
 const liveViewers = new Map();
@@ -154,7 +166,8 @@ async function studentPayload(student) {
       trophyLeague: leagueBand(student.totalSp),
       legendBadgeUnlocked: legendBadge(highestSpEver),
       leaderboardGroup: myGroup,
-      leaderboardGroupLabel: groupLabel(myGroup)
+      leaderboardGroupLabel: groupLabel(myGroup),
+      surveyCompleted: Boolean(student.surveyCompleted)
     },
     transactions,
     polls,
@@ -184,7 +197,15 @@ function adminGuard(req, res, next) {
 
 api.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-api.get('/config', (_req, res) => res.json({ allowStudentSearch: ALLOW_STUDENT_SEARCH }));
+api.get('/config', (_req, res) => res.json({
+  allowStudentSearch: ALLOW_STUDENT_SEARCH,
+  survey: {
+    enabled: SURVEY.enabled,
+    formUrl: SURVEY.formUrl,
+    emailEntryId: SURVEY.emailEntryId,
+    enforcement: SURVEY.enforcement
+  }
+}));
 
 api.get('/me', async (req, res) => {
   const email = await studentEmailFromRequest(req);
@@ -263,6 +284,55 @@ api.post('/ping', async (req, res) => {
     liveViewers.set(normalized, { name, page, lastSeen: new Date() });
   }
   res.json({ ok: true });
+});
+
+// --- Survey triangulation (mandatory perception follow-up) ---------------
+// Mark a student's survey as completed. Idempotent; matches on primary or
+// alternate email. No SP is awarded — the survey is mandatory, not rewarded.
+async function markSurveyComplete(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const student = await Student.findOne({ $or: [{ email: normalized }, { alternateEmail: normalized }] });
+  if (!student) return null;
+  if (!student.surveyCompleted) {
+    student.surveyCompleted = true;
+    student.surveyCompletedAt = new Date();
+    await student.save();
+  }
+  return student;
+}
+
+// Called by the student via the "I've submitted — continue" button or the
+// iframe-load detector. Uses the Samagama session email; falls back to the
+// posted email only when student search is enabled (local/dev). Production runs
+// with ALLOW_STUDENT_SEARCH=false, so there it is strictly session-authenticated.
+api.post('/survey/complete', async (req, res) => {
+  let email = await studentEmailFromRequest(req);
+  if (!email && ALLOW_STUDENT_SEARCH) email = normalizeEmail(req.body?.email);
+  if (!email) return res.status(401).json({ ok: false });
+  const student = await markSurveyComplete(email);
+  if (!student) return res.status(404).json({ ok: false, error: 'Student not found' });
+  res.json({ ok: true });
+});
+
+// Lightweight completion check the modal polls (so a webhook-marked submission
+// auto-dismisses the modal without a page reload). Session-authenticated.
+api.get('/survey/status', async (req, res) => {
+  const email = await studentEmailFromRequest(req);
+  if (!email) return res.json({ completed: false });
+  const student = await Student.findOne({ $or: [{ email }, { alternateEmail: email }] }).lean();
+  res.json({ completed: Boolean(student?.surveyCompleted) });
+});
+
+// Authoritative confirmation: the Google Form's Apps Script onFormSubmit
+// trigger POSTs { email, secret } here. Secret-authenticated, not session.
+api.post('/survey/webhook', async (req, res) => {
+  if (!SURVEY.webhookSecret || String(req.body?.secret || '') !== SURVEY.webhookSecret) {
+    return res.status(403).json({ ok: false, error: 'forbidden' });
+  }
+  const student = await markSurveyComplete(req.body?.email);
+  if (!student) return res.status(404).json({ ok: false, error: 'no match', email: normalizeEmail(req.body?.email) });
+  res.json({ ok: true, email: student.email });
 });
 
 api.get('/admin/stats', adminGuard, async (_req, res) => {
