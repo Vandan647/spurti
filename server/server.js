@@ -3,10 +3,9 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import path from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
-import { ALLOW_STUDENT_SEARCH, MONGO_URI, PORT, SPURTI_AUTH_SECRET, SPURTI_COOKIE_SECURE } from './config.js';
+import { ALLOW_STUDENT_SEARCH, MONGO_URI, PORT, SAMAGAMA_AUTH_URL } from './config.js';
 import Student from './models/Student.js';
 import Session from './models/Session.js';
 import AttendanceRecord from './models/AttendanceRecord.js';
@@ -23,7 +22,6 @@ const rootDir = path.resolve(__dirname, '..');
 const clientDist = path.join(rootDir, 'client', 'dist');
 const ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || 'dled@iitrpr.ac.in');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'vled-local-admin';
-const STUDENT_COOKIE = 'spurti_student';
 
 const app = express();
 const api = express.Router();
@@ -63,44 +61,30 @@ function parseCookies(header = '') {
   }).filter(Boolean));
 }
 
-function signValue(value) {
-  return crypto.createHmac('sha256', SPURTI_AUTH_SECRET).update(value).digest('base64url');
-}
-
-function verifySignedToken(token) {
-  if (!SPURTI_AUTH_SECRET) return null;
-  const [body, signature] = String(token || '').split('.');
-  if (!body || !signature) return null;
-  const expected = signValue(body);
-  const left = Buffer.from(signature);
-  const right = Buffer.from(expected);
-  if (left.length !== right.length || !crypto.timingSafeEqual(left, right)) return null;
+// Validate the student's Samagama session by forwarding their chatengine_token
+// cookie to Samagama's internal auth endpoint. Returns the email on success.
+async function getSamagamaUser(chatengineToken) {
+  if (!chatengineToken) return null;
   try {
-    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-    if (!payload.email || !payload.exp || Date.now() > Number(payload.exp)) return null;
-    return { email: normalizeEmail(payload.email) };
+    const res = await fetch(SAMAGAMA_AUTH_URL, {
+      headers: { cookie: `chatengine_token=${chatengineToken}` },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!res.ok) return null;
+    return await res.json();
   } catch {
     return null;
   }
 }
 
-function setStudentCookie(res, email) {
-  const body = Buffer.from(JSON.stringify({
-    email: normalizeEmail(email),
-    exp: Date.now() + 24 * 60 * 60 * 1000
-  })).toString('base64url');
-  const value = `${body}.${signValue(body)}`;
-  const secure = SPURTI_COOKIE_SECURE ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `${STUDENT_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure}`);
-}
-
-function clearStudentCookie(res) {
-  res.setHeader('Set-Cookie', `${STUDENT_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
-}
-
-function studentFromCookie(req) {
+async function studentEmailFromRequest(req) {
   const cookies = parseCookies(req.headers.cookie || '');
-  return verifySignedToken(cookies[STUDENT_COOKIE]);
+  const data = await getSamagamaUser(cookies.chatengine_token);
+  // Samagama's /api/auth/me nests the user as { user: { email, ... } };
+  // fall back to a top-level email in case the shape ever flattens.
+  const email = data?.user?.email || data?.email;
+  if (!email) return null;
+  return normalizeEmail(email);
 }
 
 async function rankFor(email) {
@@ -207,26 +191,11 @@ api.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 api.get('/config', (_req, res) => res.json({ allowStudentSearch: ALLOW_STUDENT_SEARCH }));
 
-async function authHandoff(req, res) {
-  const verified = verifySignedToken(req.query.token);
-  if (!verified) return res.status(401).send('Invalid or expired Spurti login link.');
-  const student = await Student.findOne({ $or: [{ email: verified.email }, { alternateEmail: verified.email }] }).lean();
-  if (!student) return res.status(404).send('No Spurti record was found for this Samagama account.');
-  if (student.status === 'excused') return res.status(403).send('Your current internship account has been excused. Your previous Spurti record is preserved, and you may come back in the next cohort.');
-  setStudentCookie(res, student.email);
-  res.redirect(req.path.startsWith('/spurti') || req.baseUrl.startsWith('/spurti') ? '/spurti/' : '/');
-}
-
-api.get('/auth', authHandoff);
-
 api.get('/me', async (req, res) => {
-  const verified = studentFromCookie(req);
-  if (!verified) return res.status(401).json({ authenticated: false });
-  const student = await Student.findOne({ email: verified.email }).lean();
-  if (!student) {
-    clearStudentCookie(res);
-    return res.status(404).json({ authenticated: false, error: 'Student not found' });
-  }
+  const email = await studentEmailFromRequest(req);
+  if (!email) return res.status(401).json({ authenticated: false });
+  const student = await Student.findOne({ $or: [{ email }, { alternateEmail: email }] }).lean();
+  if (!student) return res.status(404).json({ authenticated: false, error: 'Student not found' });
   if (student.status === 'excused') return res.json({ authenticated: true, ...excusedPayload(student) });
   res.json({ authenticated: true, profile: await studentPayload(student) });
 });
@@ -287,7 +256,14 @@ api.post('/ping', async (req, res) => {
   const { email, name, page } = req.body || {};
   const normalized = normalizeEmail(email);
   if (!normalized || !name || !page) return res.status(400).json({ error: 'email, name, page required' });
-  await SessionEvent.create({ email: normalized, name, event: 'page_view', page });
+  // Telemetry is best-effort: an unknown page value (e.g. a new admin sub-page
+  // not yet in the enum) must never crash the request or leak an unhandled
+  // rejection. Drop the write and carry on.
+  try {
+    await SessionEvent.create({ email: normalized, name, event: 'page_view', page });
+  } catch (err) {
+    if (err?.name !== 'ValidationError') console.error('ping log failed:', err?.message);
+  }
   if (page === 'record' || page.startsWith('admin')) {
     liveViewers.set(normalized, { name, page, lastSeen: new Date() });
   }
@@ -587,7 +563,6 @@ function last24Hours(now) {
 
 app.use('/api', api);
 app.use('/spurti/api', api);
-app.get('/spurti/auth', authHandoff);
 
 if (fs.existsSync(clientDist)) {
   app.use('/spurti', express.static(clientDist));

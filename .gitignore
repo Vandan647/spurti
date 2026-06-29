@@ -18,3 +18,7 @@ data/uploads/
 
 # pipeline secrets — never commit
 pipeline/.env
+
+# runtime log + local DB backups (not for the repo)
+server.log
+sp-runs/

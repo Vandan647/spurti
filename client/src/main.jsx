@@ -484,7 +484,7 @@ function Polls({ polls }) {
               <span>{poll.attemptedQuestions}/{poll.totalQuestions} attempted</span>
             </div>
             <div className="poll-responses">
-              {poll.responses.map((item, i) => (
+              {(poll.responses || []).map((item, i) => (
                 <div key={i} className={item.attempted ? 'attempted' : 'missed'}>
                   <span>{item.pollName}</span>
                   <p>{item.question}</p>
