@@ -818,9 +818,10 @@ function SurveyModal({ survey, student, onDone }) {
         <div className="survey-head">
           <h2 id="survey-title">One quick step — your feedback is required</h2>
           <p>
-            Please complete this short survey to continue to your Spurti dashboard.
-            Just answer the questions and press <strong>Submit</strong> — this window
-            closes on its own once your response is recorded.
+            Please complete and submit this short survey to continue to your Spurti
+            dashboard. Just answer the questions and press <strong>Submit</strong>.
+            This window closes on its own once we receive your response (it can take
+            a few minutes). <strong>If you skip it, it will reappear.</strong>
           </p>
         </div>
         <iframe title="Spurti feedback survey" src={src} className="survey-frame" onLoad={handleIframeLoad} />

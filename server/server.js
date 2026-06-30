@@ -32,8 +32,30 @@ const SURVEY = {
   // Auto-expiry. After this instant the modal stops showing (normal Spurti
   // resumes) with no redeploy. ISO 8601 incl. offset, e.g. 2026-06-30T23:59:59+05:30.
   deadline: process.env.SURVEY_DEADLINE || '',
-  webhookSecret: process.env.SURVEY_WEBHOOK_SECRET || '' // shared secret for the Apps Script webhook
+  webhookSecret: process.env.SURVEY_WEBHOOK_SECRET || '', // shared secret for the Apps Script webhook
+  // Apps Script web app that returns {emails:[...]} of actual submitters (private
+  // sheet; secret-gated). Used to verify completion without trusting the client.
+  responsesUrl: process.env.SURVEY_RESPONSES_URL || '',
+  responsesSecret: process.env.SURVEY_RESPONSES_SECRET || ''
 };
+
+// Cached fetch of the submitted-email set from the Apps Script endpoint.
+let _subs = { at: 0, set: null };
+async function getSubmittedEmails() {
+  if (!SURVEY.responsesUrl) return null;
+  if (_subs.set && Date.now() - _subs.at < 60000) return _subs.set;   // 60s cache
+  try {
+    const u = SURVEY.responsesUrl + (SURVEY.responsesUrl.includes('?') ? '&' : '?') +
+              'secret=' + encodeURIComponent(SURVEY.responsesSecret);
+    const r = await fetch(u, { redirect: 'follow' });
+    const j = await r.json();
+    _subs = { at: Date.now(), set: new Set((j.emails || []).map(e => normalizeEmail(e))) };
+    return _subs.set;
+  } catch (err) {
+    console.error('survey responses fetch failed:', err?.message);
+    return _subs.set; // serve last good cache on failure
+  }
+}
 
 // The survey is active only while enabled AND before its deadline (if set).
 function surveyActive() {
@@ -327,7 +349,18 @@ api.get('/survey/status', async (req, res) => {
   const email = await studentEmailFromRequest(req);
   if (!email) return res.json({ completed: false });
   const student = await Student.findOne({ $or: [{ email }, { alternateEmail: email }] }).lean();
-  res.json({ completed: Boolean(student?.surveyCompleted) });
+  if (student?.surveyCompleted) return res.json({ completed: true });
+  // On-demand verification against the responses sheet (so the "I've submitted"
+  // button confirms a genuine submission without waiting for the 10-min cron).
+  const subs = await getSubmittedEmails();
+  if (subs && student) {
+    const e = normalizeEmail(student.email), a = normalizeEmail(student.alternateEmail);
+    if (subs.has(e) || (a && subs.has(a))) {
+      await markSurveyComplete(student.email);
+      return res.json({ completed: true });
+    }
+  }
+  res.json({ completed: false });
 });
 
 // Authoritative confirmation: the Google Form's Apps Script onFormSubmit
