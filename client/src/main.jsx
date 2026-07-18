@@ -1005,6 +1005,8 @@ function PeersTab({ profile }) {
           onClose={() => setComparePeer(null)}
         />
       )}
+
+      <ComparisonCircleSection studentId={student._id} myEmail={student.email} myName={student.name} />
     </section>
   );
 }
@@ -1127,6 +1129,214 @@ function PeerCompareModal({ me, cohort, peer, onClose }) {
           <button className="secondary" onClick={onClose}>Close</button>
         </div>
       </section>
+    </div>
+  );
+}
+
+// ── Comparison Circle Section ─────────────────────────────────────────────────────
+
+function ComparisonCircleSection({ studentId, myEmail, myName }) {
+  const [circle, setCircle] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [circleMsg, setCircleMsg] = useState('');
+  const [addQuery, setAddQuery] = useState('');
+  const [addResults, setAddResults] = useState([]);
+  const [addSearching, setAddSearching] = useState(false);
+  const [addMsg, setAddMsg] = useState('');
+  const [actionMsg, setActionMsg] = useState('');
+
+  async function loadCircle() {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/comparison-circle?email=${encodeURIComponent(myEmail)}`, { credentials: 'include' });
+      if (!res.ok) { setCircleMsg('Could not load your comparison circle.'); return; }
+      setCircle(await res.json());
+      setCircleMsg('');
+    } catch {
+      setCircleMsg('Network error loading circle.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadCircle(); }, []);
+
+  async function doAddSearch() {
+    const q = addQuery.trim();
+    if (q.length < 2) { setAddMsg('Type at least 2 characters.'); setAddResults([]); return; }
+    setAddSearching(true);
+    setAddMsg('');
+    try {
+      const res = await fetch(`${API}/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      const hits = (data.matches || []).filter(m => String(m._id) !== String(studentId));
+      setAddResults(hits);
+      setAddMsg(hits.length ? `${hits.length} result${hits.length > 1 ? 's' : ''} found.` : 'No matching student found.');
+    } catch {
+      setAddMsg('Search failed.');
+    } finally {
+      setAddSearching(false);
+    }
+  }
+
+  async function addMember(peer) {
+    setActionMsg('');
+    try {
+      const res = await fetch(`${API}/comparison-circle/members?email=${encodeURIComponent(myEmail)}`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: peer._id })
+      });
+      const data = await res.json();
+      if (!res.ok) { setActionMsg(data.error || 'Could not add member.'); return; }
+      setActionMsg(`${peer.name} added to your circle!`);
+      setAddResults([]);
+      setAddQuery('');
+      setAddMsg('');
+      await loadCircle();
+    } catch {
+      setActionMsg('Network error.');
+    }
+  }
+
+  async function removeMember(memberId, memberName) {
+    setActionMsg('');
+    try {
+      const res = await fetch(`${API}/comparison-circle/members/${memberId}?email=${encodeURIComponent(myEmail)}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) { setActionMsg(data.error || 'Could not remove member.'); return; }
+      setActionMsg(`${memberName} removed from your circle.`);
+      await loadCircle();
+    } catch {
+      setActionMsg('Network error.');
+    }
+  }
+
+  const memberCount = circle?.members?.length ?? 0;
+  const isFull = memberCount >= 10;
+  const capPct = (memberCount / 10) * 100;
+
+  return (
+    <div className="circle-section">
+      <div className="circle-header">
+        <h3 className="peers-section-title">🔵 My Comparison Circle</h3>
+        <div className="circle-capacity">
+          <div className="circle-cap-bar">
+            <div
+              className={`circle-cap-fill${isFull ? ' circle-cap-full' : ''}`}
+              style={{ width: `${capPct}%` }}
+            />
+          </div>
+          <span className={`circle-cap-label${isFull ? ' circle-cap-label--full' : ''}`}>
+            {memberCount}/10 members
+          </span>
+        </div>
+      </div>
+
+      {loading && <p className="muted">Loading your circle…</p>}
+      {circleMsg && <p className="error">{circleMsg}</p>}
+
+      {/* ── Add member search ── */}
+      {!loading && !circleMsg && (
+        <div className="circle-add-row">
+          <input
+            id="circle-search-input"
+            value={addQuery}
+            onChange={e => setAddQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && doAddSearch()}
+            placeholder="Search to add a member…"
+            disabled={isFull}
+          />
+          <button
+            id="circle-search-btn"
+            className="primary"
+            onClick={doAddSearch}
+            disabled={addSearching || isFull}
+          >
+            {addSearching ? 'Searching…' : 'Search'}
+          </button>
+        </div>
+      )}
+      {isFull && <p className="muted circle-full-msg">Circle is full — remove a member to add someone new.</p>}
+      {addMsg && <p className="muted">{addMsg}</p>}
+      {addResults.length > 0 && (
+        <div className="circle-add-results">
+          {addResults.map(peer => (
+            <div key={peer._id} className="circle-add-row-result">
+              <span className="circle-add-name">{peer.name}</span>
+              <span className="circle-add-sp">{peer.totalSp} SP</span>
+              <button
+                id={`circle-add-${peer._id}`}
+                className="primary"
+                onClick={() => addMember(peer)}
+                disabled={isFull || circle?.members?.some(m => String(m._id) === String(peer._id))}
+              >
+                {circle?.members?.some(m => String(m._id) === String(peer._id)) ? 'In circle' : '+ Add'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {actionMsg && <p className={actionMsg.includes('added') || actionMsg.includes('removed') ? 'muted circle-action-ok' : 'error'}>{actionMsg}</p>}
+
+      {/* ── Circle leaderboard ── */}
+      {circle && circle.leaderboard && circle.leaderboard.length > 0 ? (
+        <div className="circle-leaderboard-wrap">
+          <table className="table circle-leaderboard">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Name</th>
+                <th>SP</th>
+                <th>Level</th>
+                <th>Badges</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {circle.leaderboard.map(row => (
+                <tr
+                  key={row._id}
+                  className={row.isCurrentStudent ? 'current-student circle-me-row' : ''}
+                >
+                  <td className="circle-rank">{row.rank}</td>
+                  <td className="circle-name">
+                    {row.name}
+                    {row.isCurrentStudent && <em className="circle-you-tag"> (you)</em>}
+                  </td>
+                  <td><strong>{row.totalSp}</strong></td>
+                  <td>Lv {row.level}</td>
+                  <td>
+                    <div className="circle-badges">
+                      {(row.badges || []).map(b => <em key={b} className="circle-badge">{b}</em>)}
+                    </div>
+                  </td>
+                  <td>
+                    {!row.isCurrentStudent && (
+                      <button
+                        id={`circle-remove-${row._id}`}
+                        className="circle-remove-btn"
+                        onClick={() => removeMember(row._id, row.name)}
+                        title={`Remove ${row.name} from circle`}
+                      >✕</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        !loading && !circleMsg && (
+          <p className="muted circle-empty-msg">
+            Your comparison circle is empty — search and add active students above!
+          </p>
+        )
+      )}
     </div>
   );
 }
